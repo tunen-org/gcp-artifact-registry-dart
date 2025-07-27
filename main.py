@@ -1,11 +1,12 @@
 import os
-import yaml
-import tempfile
 import tarfile
 import hashlib
+import requests
 from io import BytesIO
 from flask import Flask, jsonify, request
-from google.cloud import artifactregistry
+from google.auth import default
+from google.auth.transport.requests import Request
+import yaml
 
 app = Flask(__name__)
 
@@ -21,42 +22,58 @@ class ArtifactRegistryPubServer:
         self.location = location
         self.repository = repository
 
-        # Initialize the Artifact Registry client
-        self.client = artifactregistry.ArtifactRegistryClient()
-        self.repository_path = self.client.repository_path(
-            project_id, location, repository
-        )
+        # Initialize credentials for REST API calls
+        self.credentials, _ = default()
+        self.base_url = f"https://artifactregistry.googleapis.com/v1/projects/{project_id}/locations/{location}/repositories/{repository}"
+
+    def _get_access_token(self):
+        """Get an access token for API calls"""
+        # Always refresh to ensure we have a valid token
+        # This is safe to call - it will only refresh if needed
+        request = Request()
+        self.credentials.refresh(request)
+        return self.credentials.token
 
     def list_package_versions(self, package_name):
-        """List all versions of a package from Artifact Registry"""
+        """List all versions of a package from Artifact Registry using REST API"""
         try:
-            # List packages with the specific name
-            request = artifactregistry.ListPackagesRequest(
-                parent=self.repository_path, filter=f"name:packages/{package_name}"
-            )
+            headers = {
+                "Authorization": f"Bearer {self._get_access_token()}",
+                "Content-Type": "application/json",
+            }
 
-            packages = self.client.list_packages(request=request)
+            # List packages with the specific name
+            packages_url = f"{self.base_url}/packages"
+            params = {"filter": f"name:packages/{package_name}"}
+
+            response = requests.get(packages_url, headers=headers, params=params)
+
+            if response.status_code != 200:
+                print(f"Error listing packages: {response.text}")
+                return []
+
+            packages_data = response.json()
             package_versions = []
 
-            for package in packages:
+            for package in packages_data.get("packages", []):
                 # List versions for this package
-                versions_request = artifactregistry.ListVersionsRequest(
-                    parent=package.name
-                )
+                versions_url = f"{self.base_url}/packages/{package_name}/versions"
+                versions_response = requests.get(versions_url, headers=headers)
 
-                versions = self.client.list_versions(request=versions_request)
-                for version in versions:
-                    package_versions.append(
-                        {
-                            "name": package_name,
-                            "version": version.name.split("/")[-1],
-                            "create_time": version.create_time,
-                            "update_time": version.update_time,
-                        }
-                    )
+                if versions_response.status_code == 200:
+                    versions_data = versions_response.json()
+                    for version in versions_data.get("versions", []):
+                        package_versions.append(
+                            {
+                                "name": package_name,
+                                "version": version["name"].split("/")[-1],
+                                "create_time": version.get("createTime"),
+                                "update_time": version.get("updateTime"),
+                            }
+                        )
 
             # Sort by creation time (newest first)
-            package_versions.sort(key=lambda x: x["create_time"], reverse=True)
+            package_versions.sort(key=lambda x: x["create_time"] or "", reverse=True)
             return package_versions
 
         except Exception as e:
@@ -64,23 +81,30 @@ class ArtifactRegistryPubServer:
             return []
 
     def get_package_file_url(self, package_name, version):
-        """Get download URL for a specific package version"""
+        """Get download URL for a specific package version using REST API"""
         try:
-            # Generate a signed URL for the package file
-            # Note: This requires the package to be stored with a specific structure
-            version_path = self.client.version_path(
-                self.project_id, self.location, self.repository, package_name, version
-            )
+            headers = {
+                "Authorization": f"Bearer {self._get_access_token()}",
+                "Content-Type": "application/json",
+            }
 
             # List files in the version
-            files_request = artifactregistry.ListFilesRequest(parent=version_path)
+            files_url = (
+                f"{self.base_url}/packages/{package_name}/versions/{version}/files"
+            )
+            response = requests.get(files_url, headers=headers)
 
-            files = self.client.list_files(request=files_request)
-            for file in files:
-                if file.name.endswith("package.tar.gz"):
+            if response.status_code != 200:
+                return None
+
+            files_data = response.json()
+
+            for file_info in files_data.get("files", []):
+                if file_info["name"].endswith("package.tar.gz"):
                     # Generate download URL
-                    # This is a simplified approach - in practice you might want to use signed URLs
-                    return f"https://artifactregistry.googleapis.com/download/v1/{file.name}"
+                    file_name = file_info["name"]
+                    download_url = f"https://artifactregistry.googleapis.com/download/v1/{file_name}"
+                    return download_url
 
             return None
 
@@ -89,68 +113,121 @@ class ArtifactRegistryPubServer:
             return None
 
     def upload_package(self, package_data, package_name, version):
-        """Upload package to Artifact Registry"""
+        """Upload package to Artifact Registry using REST API"""
         try:
-            # Create a temporary file for the package
-            with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tmp:
-                tmp.write(package_data)
-                tmp_path = tmp.name
+            headers = {"Authorization": f"Bearer {self._get_access_token()}"}
 
-            try:
-                # Upload the file to Artifact Registry
-                # Note: This is a simplified approach. The actual implementation
-                # would depend on how you structure your generic artifacts
+            # Upload using the generic artifacts API
+            upload_url = f"https://artifactregistry.googleapis.com/upload/v1/projects/{self.project_id}/locations/{self.location}/repositories/{self.repository}/genericArtifacts:create"
 
-                # For generic repositories, you typically upload using the REST API
-                # or by creating the appropriate package/version/file structure
+            # Prepare the multipart form data
+            files = {
+                "meta": (
+                    None,
+                    f'{{"filename":"package.tar.gz","package_id":"{package_name}","version_id":"{version}"}}',
+                    "application/json",
+                ),
+                "blob": ("package.tar.gz", BytesIO(package_data), "application/gzip"),
+            }
 
-                package_path = self.client.package_path(
-                    self.project_id, self.location, self.repository, package_name
-                )
+            params = {"alt": "json"}
 
-                # Check if package exists, create if not
-                try:
-                    self.client.get_package(name=package_path)
-                except:
-                    # Package doesn't exist, create it
-                    package = artifactregistry.Package(name=package_path)
-                    create_package_request = artifactregistry.CreatePackageRequest(
-                        parent=self.repository_path,
-                        package_id=package_name,
-                        package=package,
-                    )
-                    self.client.create_package(request=create_package_request)
+            response = requests.post(
+                upload_url, headers=headers, files=files, params=params
+            )
 
-                # Create version
-                version_path = self.client.version_path(
-                    self.project_id,
-                    self.location,
-                    self.repository,
-                    package_name,
-                    version,
-                )
-
-                version_obj = artifactregistry.Version(name=version_path)
-                create_version_request = artifactregistry.CreateVersionRequest(
-                    parent=package_path, version_id=version, version=version_obj
-                )
-
-                try:
-                    self.client.create_version(request=create_version_request)
-                except:
-                    pass  # Version might already exist
-
-                # For file upload, you would typically use the REST API
-                # or upload to a storage bucket that Artifact Registry monitors
-
+            if response.status_code in [200, 201]:
                 return True
-
-            finally:
-                os.unlink(tmp_path)
+            else:
+                print(f"Upload failed: {response.status_code} - {response.text}")
+                return False
 
         except Exception as e:
             print(f"Error uploading package: {e}")
             return False
+
+    def download_package(self, package_name, version, filename="package.tar.gz"):
+        """Download a package from Artifact Registry using REST API"""
+        try:
+            headers = {"Authorization": f"Bearer {self._get_access_token()}"}
+
+            # Download using the generic download API
+            download_url = f"https://artifactregistry.googleapis.com/download/v1/projects/{self.project_id}/locations/{self.location}/repositories/{self.repository}/packages/{package_name}/versions/{version}/files/{filename}"
+
+            response = requests.get(download_url, headers=headers)
+
+            if response.status_code == 200:
+                return response.content
+            else:
+                print(f"Download failed: {response.status_code} - {response.text}")
+                return None
+
+        except Exception as e:
+            print(f"Error downloading package: {e}")
+            return None
+
+    def delete_package_file(self, package_name, version, filename="package.tar.gz"):
+        """Delete a package file from Artifact Registry using REST API"""
+        try:
+            headers = {
+                "Authorization": f"Bearer {self._get_access_token()}",
+                "Content-Type": "application/json",
+            }
+
+            # Get the full file path first
+            files_url = (
+                f"{self.base_url}/packages/{package_name}/versions/{version}/files"
+            )
+            response = requests.get(files_url, headers=headers)
+
+            if response.status_code != 200:
+                return False
+
+            files_data = response.json()
+            file_path = None
+
+            for file_info in files_data.get("files", []):
+                if file_info["name"].endswith(filename):
+                    file_path = file_info["name"]
+                    break
+
+            if not file_path:
+                return False
+
+            # Delete the file
+            delete_url = f"https://artifactregistry.googleapis.com/v1/{file_path}"
+            response = requests.delete(delete_url, headers=headers)
+
+            return response.status_code in [200, 204]
+
+        except Exception as e:
+            print(f"Error deleting package file: {e}")
+            return False
+
+    def get_package_metadata(self, package_name, version):
+        """Get package metadata including pubspec and SHA256"""
+        try:
+            # Download the package to extract metadata
+            package_data = self.download_package(package_name, version)
+
+            if not package_data:
+                return None
+
+            # Extract pubspec
+            pubspec = self.extract_pubspec_from_archive(package_data)
+
+            # Calculate SHA256
+            sha256 = self.calculate_sha256(package_data)
+
+            return {
+                "pubspec": pubspec,
+                "archive_sha256": sha256,
+                "size": len(package_data),
+            }
+
+        except Exception as e:
+            print(f"Error getting package metadata: {e}")
+            return None
 
     def extract_pubspec_from_archive(self, archive_data):
         """Extract pubspec.yaml from the tar.gz archive"""
@@ -188,28 +265,43 @@ def list_package_versions(package_name):
 
     # Transform Artifact Registry response to Pub format
     latest_version = versions[0] if versions else None
+
+    # Get metadata for the latest version
+    latest_metadata = (
+        pub_server.get_package_metadata(package_name, latest_version["version"])
+        if latest_version
+        else {}
+    )
+    if latest_metadata is None:
+        latest_metadata = {}
+
     response = {
         "name": package_name,
         "latest": {
-            "version": latest_version["version"],
+            "version": latest_version["version"] if latest_version else "",
             "archive_url": pub_server.get_package_file_url(
                 package_name, latest_version["version"]
-            ),
-            "archive_sha256": "...",  # You can calculate this from the actual file
-            "pubspec": {},  # Extract from package
+            )
+            if latest_version
+            else "",
+            "archive_sha256": latest_metadata.get("archive_sha256", ""),
+            "pubspec": latest_metadata.get("pubspec", {}),
         },
         "versions": [],
     }
 
     for version in versions:
+        metadata = pub_server.get_package_metadata(package_name, version["version"])
         response["versions"].append(
             {
                 "version": version["version"],
                 "archive_url": pub_server.get_package_file_url(
                     package_name, version["version"]
                 ),
-                "archive_sha256": "...",  # Calculate from file
-                "pubspec": {},  # Extract from package
+                "archive_sha256": metadata.get("archive_sha256", "")
+                if metadata
+                else "",
+                "pubspec": metadata.get("pubspec", {}) if metadata else {},
             }
         )
 

@@ -1,3 +1,6 @@
+# GCP Artifact Registry Hosted Pub Repository Wrapper
+
+
 Hosted Pub Repository Specification Version 2
 =============================================
 This document specifies the REST API that a hosted pub _package repository_ must
