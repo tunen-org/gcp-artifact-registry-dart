@@ -13,18 +13,7 @@ from domain.models.models import (
     UploadInfo,
     UploadResult,
 )
-
-
-class PackageRepositoryError(Exception):
-    """Base exception for package repository errors"""
-
-    pass
-
-
-class PackageNotFoundError(PackageRepositoryError):
-    """Exception raised when a package is not found"""
-
-    pass
+from src.domain.models.exceptions import PackageNotFoundError
 
 
 class PackageRepository:
@@ -41,9 +30,7 @@ class PackageRepository:
         except Exception as e:
             if "404" in str(e):
                 raise PackageNotFoundError(f"Package {package_name} not found")
-            raise PackageRepositoryError(
-                f"Failed to retrieve package {package_name}: {e}"
-            )
+            raise Exception(f"Failed to retrieve package {package_name}: {e}")
 
         if not versions_data:
             raise PackageNotFoundError(f"Package {package_name} not found")
@@ -78,9 +65,7 @@ class PackageRepository:
                 continue
 
         if not versions:
-            raise PackageRepositoryError(
-                f"No valid versions found for package {package_name}"
-            )
+            raise Exception(f"No valid versions found for package {package_name}")
 
         latest = versions[0]
 
