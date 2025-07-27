@@ -1,17 +1,18 @@
-from flask import Flask, jsonify, request
-from google.cloud import artifactregistry
-import tempfile
 import os
+import yaml
+import tempfile
 import tarfile
 import hashlib
 from io import BytesIO
+from flask import Flask, jsonify, request
+from google.cloud import artifactregistry
 
 app = Flask(__name__)
 
-# Configuration
-PROJECT_ID = "your-project-id"
-LOCATION = "us-central1"  # or your preferred location
-REPOSITORY = "dart-packages"
+# Configuration - these will be set via environment variables
+PROJECT_ID = os.environ.get("PROJECT_ID", "your-project-id")
+LOCATION = os.environ.get("LOCATION", "us-central1")
+REPOSITORY = os.environ.get("REPOSITORY", "dart-packages-repository")
 
 
 class ArtifactRegistryPubServer:

@@ -48,6 +48,14 @@ resource "google_artifact_registry_repository" "dart_repository" {
   format        = "GENERIC"
 }
 
+# Create the Docker Artifact Registry repository
+resource "google_artifact_registry_repository" "docker_repository" {
+  location      = var.region
+  repository_id = var.artifact_registry_docker_repo_name
+  description   = "Docker images repository for Dart wrapper API"
+  format        = "DOCKER"
+}
+
 # Service Account for Cloud Build
 resource "google_service_account" "cloudbuild_sa" {
   account_id   = "artifact-registry-dart-build-cd"
@@ -73,7 +81,24 @@ resource "google_project_iam_member" "cloudbuild_run_developer" {
   member  = "serviceAccount:${google_service_account.cloudbuild_sa.email}"
 }
 
+resource "google_project_iam_member" "cloudbuild_artifact_registry_writer" {
+  project = var.project_id
+  role    = "roles/artifactregistry.writer"
+  member  = "serviceAccount:${google_service_account.cloudbuild_sa.email}"
+}
+
 # IAM bindings for Cloud Run Service Account
+resource "google_project_iam_member" "cloudrun_artifact_registry_reader" {
+  project = var.project_id
+  role    = "roles/artifactregistry.reader"
+  member  = "serviceAccount:${google_service_account.cloudrun_sa.email}"
+}
+
+resource "google_project_iam_member" "cloudrun_artifact_registry_writer" {
+  project = var.project_id
+  role    = "roles/artifactregistry.writer"
+  member  = "serviceAccount:${google_service_account.cloudrun_sa.email}"
+}
 
 # Cloud Build trigger
 resource "google_cloudbuild_trigger" "build_trigger_cd" {
@@ -84,10 +109,10 @@ resource "google_cloudbuild_trigger" "build_trigger_cd" {
   service_account = google_service_account.cloudbuild_sa.id
 
   substitutions = {
-    _PROJECT_ID                  = var.project_id
-    _REGION                      = var.region
-    _ARTIFACT_REGISTRY_REPO_NAME = var.artifact_registry_dart_repo_name
-    _CLOUDRUN_SA_EMAIL           = google_service_account.cloudrun_sa.email
+    _PROJECT_ID                       = var.project_id
+    _REGION                           = var.region
+    _ARTIFACT_REGISTRY_DART_REPO_NAME = var.artifact_registry_dart_repo_name
+    _CLOUDRUN_SA_EMAIL                = google_service_account.cloudrun_sa.email
   }
 
   filename = "cloudbuild-cd.yaml"
