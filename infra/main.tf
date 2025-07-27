@@ -24,14 +24,14 @@ variable "region" {
 variable "artifact_registry_dart_repo_name" {
   description = "The name of the Artifact Registry repository for Dart packages"
   type        = string
-  default     = "gcp-artifact-registry-dart-packages-repository"
+  default     = "gcp-ar-dart-package-repository"
 }
 
 # Image repository for Cloud Run to store the Dart wrapper api image
 variable "artifact_registry_docker_repo_name" {
   description = "The name of the Artifact Registry repository for Docker images used by Cloud Run"
   type        = string
-  default     = "gcp-artifact-registry-dart-image-repository"
+  default     = "gcp-ar-dart-image-repository"
 }
 
 # Configure the Google Cloud provider
@@ -116,10 +116,11 @@ resource "google_cloudbuild_trigger" "build_trigger_cd" {
   service_account = google_service_account.cloudbuild_sa.id
 
   substitutions = {
-    _PROJECT_ID                       = var.project_id
-    _REGION                           = var.region
-    _ARTIFACT_REGISTRY_DART_REPO_NAME = var.artifact_registry_dart_repo_name
-    _CLOUDRUN_SA_EMAIL                = google_service_account.cloudrun_sa.email
+    _PROJECT_ID                        = var.project_id
+    _REGION                            = var.region
+    _ARTIFACT_REGISTRY_DART_REPO_NAME  = var.artifact_registry_dart_repo_name
+    _ARTIFACT_REGISTRY_IMAGE_REPO_NAME = var.artifact_registry_docker_repo_name
+    _CLOUDRUN_SA_EMAIL                 = google_service_account.cloudrun_sa.email
   }
 
   filename = "cloudbuild-cd.yaml"
